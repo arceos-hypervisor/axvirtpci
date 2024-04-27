@@ -10,6 +10,7 @@ pub mod config;
 pub mod host;
 pub mod msix;
 pub mod util;
+mod dummy_host;
 
 mod bus;
 // mod root_port;
@@ -18,6 +19,8 @@ pub use bus::PciBus;
 pub use config::{PciConfig, INTERRUPT_PIN};
 pub use host::PciHost;
 pub use msix::*;
+
+pub use dummy_host::DummyPciHost;
 
 use alloc::string::String;
 use alloc::sync::{Arc, Weak};
