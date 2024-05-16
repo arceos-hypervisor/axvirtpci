@@ -13,3 +13,7 @@ hypercraft = { path = "../hypercraft" }
 hashbrown = "0.14"
 bit_field = "0.10"
 lazy_static = { version = "1.4.0", features = ["spin_no_std"] }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+x86 = "0.52"
+x86_64 = "0.14"
