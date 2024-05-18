@@ -70,7 +70,7 @@ impl<B: BarAllocTrait> PciBus<B> {
             debug!("Find device {}:{}", bus_num, devfn);
             return Some((*dev).clone());
         }
-        debug!("Can't find device {}:{}", bus_num, devfn);
+        // debug!("Can't find device {}:{}", bus_num, devfn);
         None
     }
 

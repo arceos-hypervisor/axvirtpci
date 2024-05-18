@@ -74,10 +74,10 @@ impl<B: BarAllocTrait> PioOps for PciHost<B> {
     }
 
     fn read(&mut self, port: u16, access_size: u8) -> HyperResult<u32> {
-        debug!(
-            "this is pci host read port:{:#x} access_size:{}",
-            port, access_size
-        );
+        // debug!(
+        //     "this is pci host read port:{:#x} access_size:{}",
+        //     port, access_size
+        // );
         let mut data = [0xffu8; 4]; // max access size is 4
         let cloned_hb = self.clone();
         if PCI_CFG_ADDR_PORT.contains(&port) {
@@ -100,7 +100,7 @@ impl<B: BarAllocTrait> PioOps for PciHost<B> {
             }
             let mut offset: u32 = (cloned_hb.config_addr & !CONFIG_ADDRESS_ENABLE_MASK)
                 + (port - PCI_CFG_DATA_PORT.start) as u32;
-            debug!("in pci read: offset:{:#x}", offset);
+            // debug!("in pci read: offset:{:#x}", offset);
             let bus_num = ((offset >> PIO_BUS_SHIFT) & CONFIG_BUS_MASK) as u8;
             let devfn = ((offset >> PIO_DEVFN_SHIFT) & CONFIG_DEVFN_MASK) as u8;
             match cloned_hb.find_device(bus_num, devfn) {
@@ -132,10 +132,10 @@ impl<B: BarAllocTrait> PioOps for PciHost<B> {
     }
 
     fn write(&mut self, port: u16, access_size: u8, value: u32) -> HyperResult {
-        debug!(
-            "this is pci host write port:{:#x} access_size:{} value:{:#x}",
-            port, access_size, value
-        );
+        // debug!(
+        //     "this is pci host write port:{:#x} access_size:{} value:{:#x}",
+        //     port, access_size, value
+        // );
         if PCI_CFG_ADDR_PORT.contains(&port) {
             // Write configuration address register.
             // deal with pci_check_type1 in linux
