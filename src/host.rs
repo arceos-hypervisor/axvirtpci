@@ -2,16 +2,14 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use core::ops::Range;
 use spin::Mutex;
-use x86::io;
+
+use axerrno::{AxError, AxResult};
 
 use crate::{bus::PciBus, BarAllocTrait, MsiIrqManager, PciDevOps};
 #[cfg(target_arch = "x86_64")]
 use crate::{le_read_u32, le_write_u32};
 
-// use hypercraft::MmioOps;
-#[cfg(target_arch = "x86_64")]
-use hypercraft::PioOps;
-use hypercraft::{HyperError, HyperResult};
+use crate::PioOps;
 
 #[cfg(target_arch = "x86_64")]
 const CONFIG_ADDRESS_ENABLE_MASK: u32 = 0x8000_0000;
@@ -73,7 +71,7 @@ impl<B: BarAllocTrait> PioOps for PciHost<B> {
         PCI_CFG_ADDR_PORT.start..PCI_CFG_DATA_PORT.end
     }
 
-    fn read(&mut self, port: u16, access_size: u8) -> HyperResult<u32> {
+    fn read(&mut self, port: u16, access_size: u8) -> AxResult<u32> {
         // debug!(
         //     "this is pci host read port:{:#x} access_size:{}",
         //     port, access_size
@@ -82,21 +80,17 @@ impl<B: BarAllocTrait> PioOps for PciHost<B> {
         let cloned_hb = self.clone();
         if PCI_CFG_ADDR_PORT.contains(&port) {
             // Read configuration address register.
-            if port==0xcf8 && self.check_type1==2 {
+            if port == 0xcf8 && self.check_type1 == 2 {
                 self.check_type1 = 0;
                 return Ok(0x8000_0000);
-            }
-            // else if port != PCI_CFG_ADDR_PORT.start || access_size != 4 {
-            //     return Err(HyperError::InValidPioRead);
-            // }
-            else {
+            } else {
                 // also deal with tmp = inl(0xCF8); in check type
                 le_write_u32(&mut data[..], 0, cloned_hb.config_addr).unwrap();
             }
         } else {
             // Read configuration data register.
             if access_size > 4 || cloned_hb.config_addr & CONFIG_ADDRESS_ENABLE_MASK == 0 {
-                return Err(HyperError::InValidPioRead);
+                return Err(AxError::InvalidInput);
             }
             let mut offset: u32 = (cloned_hb.config_addr & !CONFIG_ADDRESS_ENABLE_MASK)
                 + (port - PCI_CFG_DATA_PORT.start) as u32;
@@ -109,14 +103,6 @@ impl<B: BarAllocTrait> PioOps for PciHost<B> {
                     dev.lock().read_config(offset as usize, &mut data[..]);
                 }
                 None => {
-                    // debug!("cannot find device use passthrough to read data");
-                    // unsafe{io::outl(0xcf8, cloned_hb.config_addr);}
-                    // match access_size {
-                    //     1 => return Ok(unsafe { io::inb(port) } as u32),
-                    //     2 => return Ok(unsafe { io::inw(port) } as u32),
-                    //     4 => return Ok(unsafe { io::inl(port) }),
-                    //     _ => return Err(HyperError::InValidPioRead),
-                    // }
                     for d in data.iter_mut() {
                         *d = 0xff;
                     }
@@ -127,11 +113,11 @@ impl<B: BarAllocTrait> PioOps for PciHost<B> {
             1 => Ok(u32::from_le_bytes([data[0], 0, 0, 0])),
             2 => Ok(u32::from_le_bytes([data[0], data[1], 0, 0])),
             4 => Ok(u32::from_le_bytes(data)),
-            _ => Err(HyperError::InValidPioRead),
+            _ => Err(AxError::InvalidInput),
         }
     }
 
-    fn write(&mut self, port: u16, access_size: u8, value: u32) -> HyperResult {
+    fn write(&mut self, port: u16, access_size: u8, value: u32) -> AxResult {
         // debug!(
         //     "this is pci host write port:{:#x} access_size:{} value:{:#x}",
         //     port, access_size, value
@@ -141,15 +127,11 @@ impl<B: BarAllocTrait> PioOps for PciHost<B> {
             // deal with pci_check_type1 in linux
             if port == 0xcfb && access_size == 1 {
                 self.check_type1 = 1;
-               // do nothing for read from 0xcf8; 1: outb(0x01, 0xCFB); then will tmp = inl(0xCF8);
-            } 
-            //else if port != PCI_CFG_ADDR_PORT.start || access_size != 4 {
-                //return Err(HyperError::InValidPioWrite);
-            //} 
-            else {
-                if self.check_type1==1 {
+                // do nothing for read from 0xcf8; 1: outb(0x01, 0xCFB); then will tmp = inl(0xCF8);
+            } else {
+                if self.check_type1 == 1 {
                     self.check_type1 = 2;
-                }else {
+                } else {
                     // save bdf for next read/write
                     self.config_addr = le_read_u32(&value.to_le_bytes(), 0).unwrap();
                 }
@@ -157,14 +139,14 @@ impl<B: BarAllocTrait> PioOps for PciHost<B> {
         } else {
             // Write configuration data register.
             if access_size > 4 || self.config_addr & CONFIG_ADDRESS_ENABLE_MASK == 0 {
-                return Err(HyperError::InValidPioWrite);
+                return Err(AxError::InvalidInput);
             }
 
             let mut offset: u32 = (self.config_addr & !CONFIG_ADDRESS_ENABLE_MASK)
                 + (port - PCI_CFG_DATA_PORT.start) as u32;
             let bus_num = ((offset >> PIO_BUS_SHIFT) & CONFIG_BUS_MASK) as u8;
             let devfn = ((offset >> PIO_DEVFN_SHIFT) & CONFIG_DEVFN_MASK) as u8;
-            
+
             if let Some(dev) = self.find_device(bus_num, devfn) {
                 offset &= PIO_OFFSET_MASK;
                 let value_bytes = value.to_le_bytes();
@@ -172,19 +154,10 @@ impl<B: BarAllocTrait> PioOps for PciHost<B> {
                     1 => &value_bytes[0..1],
                     2 => &value_bytes[0..2],
                     4 => &value_bytes[0..4],
-                    _ => return Err(HyperError::InValidPioWrite),
+                    _ => return Err(AxError::InvalidInput),
                 };
                 dev.lock().write_config(offset as usize, value_byte);
             }
-            // else {
-            //     debug!("cannot find device use passthrough to write data");
-            //     match access_size {
-            //         1 => unsafe { io::outb(port, value as u8) },
-            //         2 => unsafe { io::outw(port, value as u16) },
-            //         4 => unsafe { io::outl(port, value) },
-            //         _ => {return Err(HyperError::InvalidParam);},
-            //     }
-            // }
         }
         Ok(())
     }

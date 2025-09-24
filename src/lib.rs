@@ -6,6 +6,7 @@ extern crate log;
 extern crate alloc;
 extern crate hashbrown;
 
+#[allow(unused)]
 pub mod config;
 pub mod host;
 pub mod msix;
@@ -13,12 +14,14 @@ pub mod util;
 // mod dummy_host;
 
 mod bus;
+mod ops;
 // mod root_port;
 
 pub use bus::PciBus;
 pub use config::{PciConfig, INTERRUPT_PIN};
 pub use host::PciHost;
 pub use msix::*;
+pub use ops::*;
 
 pub use crate::config::BarAllocTrait;
 use alloc::string::String;
@@ -30,7 +33,8 @@ use byteorder::{ByteOrder, LittleEndian};
 
 use crate::config::{HEADER_TYPE, HEADER_TYPE_MULTIFUNC, MAX_FUNC};
 pub use crate::util::AsAny;
-use hypercraft::{HyperError, HyperResult as Result};
+
+use axerrno::{ax_err, AxResult as Result};
 
 // const BDF_FUNC_SHIFT: u8 = 3;
 pub const PCI_SLOT_MAX: u8 = 32;
@@ -67,7 +71,7 @@ macro_rules! le_write {
             let data_len: usize = size_of::<$type>();
             let buf_len: usize = buf.len();
             if offset + data_len > buf_len {
-                return Err(HyperError::InvalidParam);
+                return ax_err!(InvalidInput, "out of buffer bounds");
             }
             for i in 0..data_len {
                 buf[offset + i] = (data >> (8 * i)) as u8;
@@ -104,7 +108,7 @@ macro_rules! le_read {
             let data_len: usize = size_of::<$type>();
             let buf_len: usize = buf.len();
             if offset + data_len > buf_len {
-                return Err(HyperError::InvalidParam);
+                return ax_err!(InvalidInput, "out of buffer bounds");
             }
             let mut res: $type = 0;
             for i in 0..data_len {

@@ -1,9 +1,3 @@
-use crate::msix::{Msix, MSIX_TABLE_ENTRY_SIZE};
-use crate::util::num_ops::ranges_overlap;
-use crate::{
-    le_read_u16, le_read_u32, le_read_u64, le_write_u16, le_write_u32, le_write_u64,
-    pci_ext_cap_next, PciBus,
-};
 use alloc::collections::BTreeMap;
 use alloc::collections::BTreeSet;
 use alloc::string::String;
@@ -12,11 +6,20 @@ use alloc::vec::Vec;
 use core::marker::PhantomData;
 use core::ops::Range;
 use core::ptr::{read, write};
+
 use hashbrown::HashMap;
-use hypercraft::{HyperError, HyperResult as Result, PciError};
-use hypercraft::{HyperResult, MmioOps, PioOps, RegionOps};
 use lazy_static::lazy_static;
 use spin::Mutex;
+
+use axerrno::{ax_err, ax_err_type, AxError, AxResult};
+
+use crate::msix::{Msix, MSIX_TABLE_ENTRY_SIZE};
+use crate::util::num_ops::ranges_overlap;
+use crate::{
+    le_read_u16, le_read_u32, le_read_u64, le_write_u16, le_write_u32, le_write_u64,
+    pci_ext_cap_next, PciBus,
+};
+use crate::{MmioOps, PioOps, RegionOps};
 
 /// The mem64 base of emulated PCI devices bars.
 pub const PCI_EMUL_MEMBASE64: u64 = 0x4000_0000_0000; /* 256GB */
@@ -347,8 +350,8 @@ impl core::fmt::Display for RegionType {
 
 /// Bar allocator trait.
 pub trait BarAllocTrait: Sized + Send + Sync + Clone {
-    fn alloc(region_type: RegionType, size: u64) -> HyperResult<u64>;
-    fn dealloc(region_type: RegionType, addr: u64, size: u64) -> HyperResult<()>;
+    fn alloc(region_type: RegionType, size: u64) -> AxResult<u64>;
+    fn dealloc(region_type: RegionType, addr: u64, size: u64) -> AxResult;
 }
 
 /// Registered bar.
@@ -367,14 +370,14 @@ impl PioOps for Bar {
         self.address as u16..(self.address + self.size) as u16
     }
 
-    fn read(&mut self, port: u16, access_size: u8) -> HyperResult<u32> {
+    fn read(&mut self, port: u16, access_size: u8) -> AxResult<u32> {
         let offset = port - self.address as u16;
         let read_func = &*self.ops.as_ref().unwrap().read;
         let ret = read_func(offset as u64, access_size)?;
         Ok(ret as u32)
     }
 
-    fn write(&mut self, port: u16, access_size: u8, value: u32) -> HyperResult {
+    fn write(&mut self, port: u16, access_size: u8, value: u32) -> AxResult {
         let offset = port - self.address as u16;
         let write_func = &*self.ops.as_ref().unwrap().write;
         let value_bytes = value.to_le_bytes();
@@ -382,7 +385,7 @@ impl PioOps for Bar {
             1 => &value_bytes[0..1],
             2 => &value_bytes[0..2],
             4 => &value_bytes[0..4],
-            _ => return Err(HyperError::InValidPioWrite),
+            _ => return ax_err!(InvalidInput, "Invalid access size for pio write"),
         };
         write_func(offset as u64, access_size, value_byte)
     }
@@ -393,7 +396,7 @@ impl MmioOps for Bar {
         self.address..self.address + self.size
     }
 
-    fn read(&mut self, addr: u64, access_size: u8) -> hypercraft::HyperResult<u64> {
+    fn read(&mut self, addr: u64, access_size: u8) -> AxResult<u64> {
         // debug!("this is mmio read addr:{:#x}", addr);
         if self.ops.is_some() {
             let offset = addr - self.address;
@@ -412,14 +415,14 @@ impl MmioOps for Bar {
                 2 => unsafe { read(actual_addr as *const u16) as u64 },
                 4 => unsafe { read(actual_addr as *const u32) as u64 },
                 8 => unsafe { read(actual_addr as *const u64) },
-                _ => return Err(HyperError::InValidMmioRead),
+                _ => return ax_err!(InvalidInput, "Invalid access size for mmio read"),
             };
             // debug!("read data:{:#x}", data);
             Ok(data)
         }
     }
 
-    fn write(&mut self, addr: u64, access_size: u8, value: u64) -> hypercraft::HyperResult {
+    fn write(&mut self, addr: u64, access_size: u8, value: u64) -> AxResult {
         // debug!("this is mmio write addr:{:#x}", addr);
         if self.ops.is_some() {
             let offset = addr - self.address;
@@ -429,7 +432,7 @@ impl MmioOps for Bar {
                 1 => &value_bytes[0..1],
                 2 => &value_bytes[0..2],
                 4 => &value_bytes[0..4],
-                _ => return Err(HyperError::InValidMmioWrite),
+                _ => return ax_err!(InvalidInput, "Invalid access size for mmio write"),
             };
             write_func(offset, access_size, value_byte)
         } else {
@@ -441,7 +444,7 @@ impl MmioOps for Bar {
                 2 => unsafe { write(actual_addr as *mut u16, value as u16) },
                 4 => unsafe { write(actual_addr as *mut u32, value as u32) },
                 8 => unsafe { write(actual_addr as *mut u64, value) },
-                _ => return Err(HyperError::InValidMmioWrite),
+                _ => return ax_err!(InvalidInput, "Invalid access size for mmio write"),
             };
             Ok(())
         }
@@ -463,7 +466,7 @@ impl PciBarAllocator {
         }
     }
 
-    pub fn alloc(&mut self, region_type: RegionType, size: u64) -> HyperResult<u64> {
+    pub fn alloc(&mut self, region_type: RegionType, size: u64) -> AxResult<u64> {
         let (alloc_map, base, limit) = match region_type {
             RegionType::Mem32Bit => (
                 &mut self.mem32_alloc,
@@ -495,7 +498,7 @@ impl PciBarAllocator {
             return Ok(addr);
         }
 
-        Err(HyperError::InvalidBarAddress)
+        Err(AxError::BadAddress)
     }
 
     pub fn alloc_addr(
@@ -503,7 +506,7 @@ impl PciBarAllocator {
         region_type: RegionType,
         size: u64,
         specific_addr: u64,
-    ) -> HyperResult<u64> {
+    ) -> AxResult<u64> {
         // align up to 4KB
         let size = (size + 0xfff) & !0xfff;
         let (alloc_map, base, limit) = match region_type {
@@ -521,12 +524,12 @@ impl PciBarAllocator {
         };
 
         if specific_addr < base || specific_addr + size > limit {
-            return Err(HyperError::InvalidBarAddress);
+            return ax_err!(BadAddress, "specific addr is out of range");
         }
 
         for (&start, &end) in alloc_map.iter() {
             if specific_addr >= start && specific_addr + size <= end {
-                return Err(HyperError::InvalidBarAddress);
+                return ax_err!(BadAddress, "specific addr is already allocated");
             }
         }
 
@@ -534,7 +537,7 @@ impl PciBarAllocator {
         Ok(specific_addr)
     }
 
-    pub fn dealloc(&mut self, region_type: RegionType, addr: u64) -> HyperResult<()> {
+    pub fn dealloc(&mut self, region_type: RegionType, addr: u64) -> AxResult {
         let alloc_map = match region_type {
             RegionType::Mem32Bit => &mut self.mem32_alloc,
             RegionType::Mem64Bit => &mut self.mem64_alloc,
@@ -640,7 +643,7 @@ impl<B: BarAllocTrait> PciConfig<B> {
     }
 
     /// Init write_mask for all kinds of PCI/PCIe devices, including bridges.
-    pub fn init_common_write_mask(&mut self) -> Result<()> {
+    pub fn init_common_write_mask(&mut self) -> AxResult {
         self.write_mask[CACHE_LINE_SIZE as usize] = 0xff;
         self.write_mask[INTERRUPT_LINE as usize] = 0xff;
         le_write_u16(
@@ -663,7 +666,7 @@ impl<B: BarAllocTrait> PciConfig<B> {
     }
 
     /// Init write_clear_mask for all kind of PCI/PCIe devices, including bridges.
-    pub fn init_common_write_clear_mask(&mut self) -> Result<()> {
+    pub fn init_common_write_clear_mask(&mut self) -> AxResult {
         le_write_u16(
             &mut self.write_clear_mask,
             STATUS as usize,
@@ -677,7 +680,7 @@ impl<B: BarAllocTrait> PciConfig<B> {
     }
 
     /// Init write_mask especially for bridge devices.
-    pub fn init_bridge_write_mask(&mut self) -> Result<()> {
+    pub fn init_bridge_write_mask(&mut self) -> AxResult {
         self.write_mask[IO_BASE as usize] = 0xf0;
         self.write_mask[IO_LIMIT as usize] = 0xf0;
         le_write_u32(&mut self.write_mask, PRIMARY_BUS_NUM as usize, 0xffff_ffff)?;
@@ -706,7 +709,7 @@ impl<B: BarAllocTrait> PciConfig<B> {
     }
 
     /// Init write_clear_mask especially for bridge devices.
-    pub fn init_bridge_write_clear_mask(&mut self) -> Result<()> {
+    pub fn init_bridge_write_clear_mask(&mut self) -> AxResult {
         le_write_u16(
             &mut self.write_clear_mask,
             BRIDGE_CONTROL as usize,
@@ -736,23 +739,25 @@ impl<B: BarAllocTrait> PciConfig<B> {
         buf[..].copy_from_slice(&self.config[offset..(offset + size)]);
     }
 
-    fn validate_config_boundary(&self, offset: usize, data: &[u8]) -> Result<()> {
+    fn validate_config_boundary(&self, offset: usize, data: &[u8]) -> AxResult {
         // According to pcie specification 7.2.2.2 PCI Express Device Requirements:
         if data.len() > 4 {
-            return Err(HyperError::PciError(PciError::InvalidConf(
-                String::from("data size"),
-                format!("{}", data.len()),
-            )));
+            // return Err(HyperError::PciError(PciError::InvalidConf(
+            //     String::from("data size"),
+            //     format!("{}", data.len()),
+            // )));
+            return ax_err!(InvalidInput, "data size exceeds 4 bytes");
         }
 
         offset
             .checked_add(data.len())
             .filter(|&end| end <= self.config.len())
             .ok_or_else(|| {
-                HyperError::PciError(PciError::InvalidConf(
-                    String::from("config size"),
-                    format!("offset {} with len {}", offset, data.len()),
-                ))
+                // HyperError::PciError(PciError::InvalidConf(
+                //     String::from("config size"),
+                //     format!("offset {} with len {}", offset, data.len()),
+                // ))
+                ax_err_type!(InvalidInput, "out of config space boundary")
             })?;
 
         Ok(())
@@ -803,7 +808,7 @@ impl<B: BarAllocTrait> PciConfig<B> {
     }
 
     /// Reset type1 specific configuration space.
-    pub fn reset_bridge_regs(&mut self) -> Result<()> {
+    pub fn reset_bridge_regs(&mut self) -> AxResult {
         le_write_u32(&mut self.config, PRIMARY_BUS_NUM as usize, 0)?;
 
         self.config[IO_BASE as usize] = 0xff;
@@ -815,7 +820,7 @@ impl<B: BarAllocTrait> PciConfig<B> {
         Ok(())
     }
 
-    fn reset_single_writable_reg(&mut self, offset: usize) -> Result<()> {
+    fn reset_single_writable_reg(&mut self, offset: usize) -> AxResult {
         let writable_command = le_read_u16(&self.write_mask, offset).unwrap()
             | le_read_u16(&self.write_clear_mask, offset).unwrap();
         let old_command = le_read_u16(&self.config, offset).unwrap();
@@ -825,7 +830,7 @@ impl<B: BarAllocTrait> PciConfig<B> {
 
     /// Reset bits that's writable in the common configuration fields for both type0 and type1
     /// devices.
-    pub fn reset_common_regs(&mut self) -> Result<()> {
+    pub fn reset_common_regs(&mut self) -> AxResult {
         self.reset_single_writable_reg(COMMAND as usize)?;
         self.reset_single_writable_reg(STATUS as usize)?;
         self.reset_single_writable_reg(INTERRUPT_LINE as usize)?;
@@ -835,7 +840,7 @@ impl<B: BarAllocTrait> PciConfig<B> {
     }
 
     /// General reset process for pci devices
-    pub fn reset(&mut self) -> Result<()> {
+    pub fn reset(&mut self) -> AxResult {
         // if let Some(intx) = &self.intx {
         //     intx.lock().reset();
         // }
@@ -924,7 +929,7 @@ impl<B: BarAllocTrait> PciConfig<B> {
         region_type: RegionType,
         prefetchable: bool,
         size: u64,
-    ) -> Result<()> {
+    ) -> AxResult {
         self.validate_bar_id(id)?;
         self.validate_bar_size(region_type, size)?;
         let offset: usize = BAR_0 as usize + id * REG_SIZE;
@@ -987,7 +992,7 @@ impl<B: BarAllocTrait> PciConfig<B> {
     /// # Arguments
     ///
     /// * `bus` - The bus which region registered.
-    pub fn unregister_bars(&mut self, _bus: &Arc<Mutex<PciBus<B>>>) -> Result<()> {
+    pub fn unregister_bars(&mut self, _bus: &Arc<Mutex<PciBus<B>>>) -> AxResult {
         // let locked_bus = bus.lock();
         for (i, bar) in self.bars.iter_mut().enumerate() {
             if bar.address == BAR_SPACE_UNMAPPED || bar.size == 0 {
@@ -1012,7 +1017,7 @@ impl<B: BarAllocTrait> PciConfig<B> {
     }
 
     /// Update bar space mapping once the base address is updated by the guest.
-    pub fn update_bar_mapping(&mut self, is_empty: bool) -> Result<()> {
+    pub fn update_bar_mapping(&mut self, is_empty: bool) -> AxResult {
         for id in 0..self.bars.len() {
             if self.bars[id].size == 0 {
                 continue;
@@ -1030,7 +1035,7 @@ impl<B: BarAllocTrait> PciConfig<B> {
                 // Invalid the bar region
                 {
                     let mut allocator = PCI_BAR_ALLOCATOR.lock();
-                    allocator.dealloc(self.bars[id].region_type, self.bars[id].address);
+                    allocator.dealloc(self.bars[id].region_type, self.bars[id].address)?;
                 }
                 self.bars[id].address = BAR_SPACE_UNMAPPED;
             }
@@ -1079,11 +1084,11 @@ impl<B: BarAllocTrait> PciConfig<B> {
     ///
     /// * `id` - Capability ID.
     /// * `size` - Size of the capability.
-    pub fn add_pci_cap(&mut self, id: u8, size: usize) -> Result<usize> {
+    pub fn add_pci_cap(&mut self, id: u8, size: usize) -> AxResult<usize> {
         // offset is the base offset of the next capability.
         let offset = self.last_cap_end as usize;
         if offset + size > PCI_CONFIG_SPACE_SIZE {
-            return Err(HyperError::PciError(PciError::AddPciCap(id, size)));
+            return ax_err!(InvalidInput, "No enough space for capability");
         }
         // every time add the new capability to the head of the capability list.
         // [0:7]: id
@@ -1117,10 +1122,10 @@ impl<B: BarAllocTrait> PciConfig<B> {
     /// * `id` - Capability ID.
     /// * `size` - Size of the capability.
     /// * `version` - Capability version.
-    pub fn add_pcie_ext_cap(&mut self, id: u16, size: usize, version: u32) -> Result<usize> {
+    pub fn add_pcie_ext_cap(&mut self, id: u16, size: usize, version: u32) -> AxResult<usize> {
         let offset = self.last_ext_cap_end as usize;
         if offset + size > PCIE_CONFIG_SPACE_SIZE {
-            return Err(HyperError::PciError(PciError::AddPcieExtCap(id, size)));
+            return ax_err!(InvalidInput, "No enough space for extended capability");
         }
 
         let regs_num = if size % REG_SIZE == 0 {
@@ -1171,30 +1176,24 @@ impl<B: BarAllocTrait> PciConfig<B> {
         end_pos - pos
     }
 
-    fn validate_bar_id(&self, id: usize) -> Result<()> {
+    fn validate_bar_id(&self, id: usize) -> AxResult {
         if (self.config[HEADER_TYPE as usize] == HEADER_TYPE_ENDPOINT
             && id >= BAR_NUM_MAX_FOR_ENDPOINT as usize)
             || (self.config[HEADER_TYPE as usize] == HEADER_TYPE_BRIDGE
                 && id >= BAR_NUM_MAX_FOR_BRIDGE as usize)
         {
-            return Err(HyperError::PciError(PciError::InvalidConf(
-                String::from("Bar id"),
-                format!("{}", id),
-            )));
+            return ax_err!(InvalidInput, "Invalid bar id");
         }
         Ok(())
     }
 
-    fn validate_bar_size(&self, bar_type: RegionType, size: u64) -> Result<()> {
+    fn validate_bar_size(&self, bar_type: RegionType, size: u64) -> AxResult {
         if !size.is_power_of_two()
             || (bar_type == RegionType::Io && size < MINIMUM_BAR_SIZE_FOR_PIO as u64)
             || (bar_type == RegionType::Mem32Bit && size > u32::MAX as u64)
             || (bar_type == RegionType::Io && size > u16::MAX as u64)
         {
-            return Err(HyperError::PciError(PciError::InvalidConf(
-                String::from("Bar size of type ") + format!("{}", bar_type).as_str(),
-                format!("{}", size),
-            )));
+            return ax_err!(InvalidInput, "Invalid bar size");
         }
         Ok(())
     }

@@ -5,15 +5,16 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU16, Ordering};
 use spin::Mutex;
 
+use axerrno::AxResult;
+
 use crate::config::BarAllocTrait;
 use crate::{
-    config::{
-        Bar, BRIDGE_CONTROL, BRIDGE_CTL_SEC_BUS_RESET, SECONDARY_BUS_NUM, SUBORDINATE_BUS_NUM,
-    },
+    config::{BRIDGE_CONTROL, BRIDGE_CTL_SEC_BUS_RESET, SECONDARY_BUS_NUM, SUBORDINATE_BUS_NUM},
     MsiIrqManager, PciDevOps,
 };
-use hypercraft::{HyperError, HyperResult as Result, MmioOps, PciError, PioOps};
+use crate::{MmioOps, PioOps};
 
+#[allow(type_alias_bounds)]
 type DeviceBusInfo<B: BarAllocTrait> = (Arc<Mutex<PciBus<B>>>, Arc<Mutex<dyn PciDevOps<B>>>);
 
 /// PCI bus structure.
@@ -185,13 +186,11 @@ impl<B: BarAllocTrait> PciBus<B> {
     ///
     /// * `bus` - Bus to detach from.
     /// * `dev` - Device attached to the bus.
-    pub fn detach_device(bus: &Arc<Mutex<Self>>, dev: &Arc<Mutex<dyn PciDevOps<B>>>) -> Result<()> {
+    pub fn detach_device(bus: &Arc<Mutex<Self>>, dev: &Arc<Mutex<dyn PciDevOps<B>>>) -> AxResult {
         let mut dev_locked = dev.lock();
-        dev_locked.unrealize().map_err(|_err| {
-            HyperError::PciError(PciError::Other(format!(
-                "Failed to unrealize device {}",
-                dev_locked.name()
-            )))
+        dev_locked.unrealize().map_err(|err| {
+            error!("Fail to unrealize pci dev, err: {:?}", err);
+            err
         })?;
 
         let devfn = dev_locked.pci_base().devfn;
@@ -205,16 +204,18 @@ impl<B: BarAllocTrait> PciBus<B> {
         Ok(())
     }
 
-    pub fn reset(&mut self) -> Result<()> {
+    pub fn reset(&mut self) -> AxResult {
         for (_id, pci_dev) in self.devices.iter() {
-            pci_dev.lock().reset(false).map_err(|_err| {
-                HyperError::PciError(PciError::Other(format!("Fail to reset pci dev")))
+            pci_dev.lock().reset(false).map_err(|err| {
+                error!("Fail to reset pci dev, err: {:?}", err);
+                err
             })?;
         }
 
         for child_bus in self.child_buses.iter_mut() {
-            child_bus.lock().reset().map_err(|_err| {
-                HyperError::PciError(PciError::Other(format!("Fail to reset child bus")))
+            child_bus.lock().reset().map_err(|err| {
+                error!("Fail to reset child bus, err: {:?}", err);
+                err
             })?;
         }
 

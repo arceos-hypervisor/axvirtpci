@@ -5,11 +5,13 @@ use core::cmp::max;
 use core::sync::atomic::{AtomicU16, Ordering};
 use spin::Mutex;
 
-use crate::config::{CapId, RegionType, MINIMUM_BAR_SIZE_FOR_MMIO};
+use axerrno::{AxError, AxResult};
+
+use crate::RegionOps;
+use crate::config::{CapId, MINIMUM_BAR_SIZE_FOR_MMIO, RegionType};
 use crate::util::num_ops::{ranges_overlap, round_up};
-use crate::{le_read_u16, le_read_u64, le_write_u16, le_write_u32, le_write_u64, PciDevBase};
 use crate::{BarAllocTrait, MsiIrqManager};
-use hypercraft::{HyperError, HyperResult, RegionOps};
+use crate::{PciDevBase, le_read_u16, le_read_u64, le_write_u16, le_write_u32, le_write_u64};
 
 pub const MSIX_TABLE_ENTRY_SIZE: u16 = 16;
 pub const MSIX_TABLE_SIZE_MAX: u16 = 0x7ff;
@@ -348,16 +350,13 @@ impl Msix {
         }
     }
 
-    fn generate_region_ops(
-        msix: Arc<Mutex<Self>>,
-        dev_id: Arc<AtomicU16>,
-    ) -> HyperResult<RegionOps> {
+    fn generate_region_ops(msix: Arc<Mutex<Self>>, dev_id: Arc<AtomicU16>) -> AxResult<RegionOps> {
         // let locked_msix = msix.lock();
         // let table_size = locked_msix.table.len() as u64;
         // let pba_size = locked_msix.pba.len() as u64;
 
         let cloned_msix = msix.clone();
-        let read = move |offset: u64, access_size: u8| -> HyperResult<u64> {
+        let read = move |offset: u64, access_size: u8| -> AxResult<u64> {
             let mut data = [0u8; 8];
             let access_offset = offset as usize + access_size as usize;
             if access_offset > cloned_msix.lock().table.len() {
@@ -366,7 +365,7 @@ impl Msix {
                         "Fail to read msix table and pba, illegal data length {}, offset {}",
                         access_size, offset
                     );
-                    return Err(HyperError::OutOfRange);
+                    return Err(AxError::InvalidData);
                 }
                 // deal with pba read
                 let offset = offset as usize;
@@ -384,7 +383,7 @@ impl Msix {
         };
 
         let cloned_msix = msix.clone();
-        let write = move |offset: u64, access_size: u8, data: &[u8]| -> HyperResult {
+        let write = move |offset: u64, access_size: u8, data: &[u8]| -> AxResult {
             let access_offset = offset as usize + access_size as usize;
             if access_offset > cloned_msix.lock().table.len() {
                 if access_offset > cloned_msix.lock().table.len() + cloned_msix.lock().pba.len() {
@@ -394,7 +393,7 @@ impl Msix {
                         offset,
                         data.len()
                     );
-                    return Err(HyperError::OutOfRange);
+                    return Err(AxError::InvalidData);
                 }
                 // deal with pba read
                 return Ok(());
@@ -443,7 +442,7 @@ pub fn init_msix<B: BarAllocTrait>(
     dev_id: Arc<AtomicU16>,
     // parent_region: Option<&Region>,
     offset_opt: Option<(u32, u32)>,
-) -> HyperResult<()> {
+) -> AxResult {
     let config = &mut pcidev_base.config;
     let parent_bus = &pcidev_base.parent_bus;
     if vector_nr == 0 || vector_nr > MSIX_TABLE_SIZE_MAX as u32 + 1 {
