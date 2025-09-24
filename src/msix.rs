@@ -7,11 +7,11 @@ use spin::Mutex;
 
 use axerrno::{AxError, AxResult};
 
-use crate::RegionOps;
-use crate::config::{CapId, MINIMUM_BAR_SIZE_FOR_MMIO, RegionType};
+use crate::config::{CapId, RegionType, MINIMUM_BAR_SIZE_FOR_MMIO};
 use crate::util::num_ops::{ranges_overlap, round_up};
+use crate::RegionOps;
+use crate::{le_read_u16, le_read_u64, le_write_u16, le_write_u32, le_write_u64, PciDevBase};
 use crate::{BarAllocTrait, MsiIrqManager};
-use crate::{PciDevBase, le_read_u16, le_read_u64, le_write_u16, le_write_u32, le_write_u64};
 
 pub const MSIX_TABLE_ENTRY_SIZE: u16 = 16;
 pub const MSIX_TABLE_SIZE_MAX: u16 = 0x7ff;
